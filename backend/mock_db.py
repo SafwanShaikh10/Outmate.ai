@@ -145,6 +145,126 @@ COMPANIES_DB = [
             "tech_adoption": "Leading edge",
             "funding_recency": "Recent (2 months ago)"
         }
+    },
+    {
+        "id": "7",
+        "name": "Razorpay",
+        "domain": "razorpay.com",
+        "industry": "Fintech",
+        "description": "India's leading payment gateway for internet businesses. Processes billions in transactions for 10M+ businesses.",
+        "location": "India",
+        "size": "1000-5000",
+        "funding_stage": "Series F",
+        "funding_amount": "$741M",
+        "growth_rate": "120% YoY",
+        "hiring_status": "Aggressive hiring",
+        "hiring_roles": ["Software Engineer", "Product Manager", "Sales Manager", "Data Scientist"],
+        "tech_stack": ["Java", "Go", "React", "MySQL", "AWS", "Kafka"],
+        "competitors_used": ["PayU", "CCAvenue", "Stripe"],
+        "current_contracts": [
+            {"provider": "PayU", "renewal_date": "2026-12-01", "satisfaction": "Low"}
+        ],
+        "signals": {
+            "hiring_growth": "High",
+            "tech_adoption": "Modern",
+            "funding_recency": "Recent (8 months ago)"
+        }
+    },
+    {
+        "id": "8",
+        "name": "Zepto",
+        "domain": "zeptonow.com",
+        "industry": "E-commerce",
+        "description": "10-minute grocery delivery startup based in India. One of the fastest-growing consumer apps in India.",
+        "location": "India",
+        "size": "2000-5000",
+        "funding_stage": "Series F",
+        "funding_amount": "$1B",
+        "growth_rate": "300% YoY",
+        "hiring_status": "Aggressive hiring",
+        "hiring_roles": ["Operations Manager", "Data Engineer", "Growth Marketer", "Backend Engineer"],
+        "tech_stack": ["React Native", "Python", "Node.js", "PostgreSQL", "GCP"],
+        "competitors_used": ["Blinkit", "Swiggy Instamart"],
+        "current_contracts": [
+            {"provider": "Blinkit", "renewal_date": "2027-01-01", "satisfaction": "Medium"}
+        ],
+        "signals": {
+            "hiring_growth": "High",
+            "tech_adoption": "State of the art",
+            "funding_recency": "Recent (2 months ago)"
+        }
+    },
+    {
+        "id": "9",
+        "name": "Sarvam AI",
+        "domain": "sarvam.ai",
+        "industry": "AI SaaS",
+        "description": "India's AI startup building LLMs in Indian languages for businesses and developers in India.",
+        "location": "India",
+        "size": "50-200",
+        "funding_stage": "Series A",
+        "funding_amount": "$41M",
+        "growth_rate": "250% YoY",
+        "hiring_status": "Aggressive hiring",
+        "hiring_roles": ["ML Engineer", "NLP Researcher", "Backend Developer", "VP of Sales"],
+        "tech_stack": ["Python", "PyTorch", "Hugging Face", "FastAPI", "AWS"],
+        "competitors_used": ["OpenAI", "Google Gemini"],
+        "current_contracts": [
+            {"provider": "OpenAI", "renewal_date": "2026-09-30", "satisfaction": "Low"}
+        ],
+        "signals": {
+            "hiring_growth": "High",
+            "tech_adoption": "Leading edge",
+            "funding_recency": "Recent (4 months ago)"
+        }
+    },
+    {
+        "id": "10",
+        "name": "CRED",
+        "domain": "cred.club",
+        "industry": "Fintech",
+        "description": "India's premium credit card bill payment and rewards platform with 12M+ high-credit-score members.",
+        "location": "India",
+        "size": "1000-3000",
+        "funding_stage": "Series F",
+        "funding_amount": "$806M",
+        "growth_rate": "80% YoY",
+        "hiring_status": "Moderate hiring",
+        "hiring_roles": ["Product Designer", "Backend Engineer", "Risk Analyst"],
+        "tech_stack": ["Kotlin", "Swift", "Python", "Kafka", "AWS"],
+        "competitors_used": ["OneCard", "BharatPe"],
+        "current_contracts": [
+            {"provider": "OneCard", "renewal_date": "2026-10-15", "satisfaction": "Medium"}
+        ],
+        "signals": {
+            "hiring_growth": "Medium",
+            "tech_adoption": "Modern",
+            "funding_recency": "1 year ago"
+        }
+    },
+    {
+        "id": "11",
+        "name": "Personio",
+        "domain": "personio.com",
+        "industry": "HR SaaS",
+        "description": "Europe's leading HR management platform for SMBs across Germany, UK, Spain and rest of Europe.",
+        "location": "Europe",
+        "size": "500-2000",
+        "funding_stage": "Series E",
+        "funding_amount": "$200M",
+        "growth_rate": "90% YoY",
+        "hiring_status": "Moderate hiring",
+        "hiring_roles": ["Sales Manager", "Customer Success", "Product Engineer"],
+        "tech_stack": ["Ruby on Rails", "React", "PostgreSQL", "AWS"],
+        "competitors_used": ["BambooHR", "Workday"],
+        "current_contracts": [
+            {"provider": "BambooHR", "renewal_date": "2026-11-01", "satisfaction": "Low"}
+        ],
+        "signals": {
+            "hiring_growth": "Medium",
+            "tech_adoption": "Modern",
+            "funding_recency": "1 year ago"
+        }
     }
 ]
 

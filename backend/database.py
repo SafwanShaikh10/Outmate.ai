@@ -220,13 +220,14 @@ def init_db():
 
     conn.commit()
 
-    # Check if companies table is empty
+    # Check if companies table needs seeding (re-seed if db has fewer companies than COMPANIES_DB)
     cursor.execute("SELECT COUNT(*) FROM companies;")
     count = cursor.fetchone()[0]
     
-    if count == 0:
-        # Seed default dataset
-        from backend.mock_db import COMPANIES_DB
+    from backend.mock_db import COMPANIES_DB
+    if count < len(COMPANIES_DB):
+        # Clear and re-seed to pick up any new companies added to COMPANIES_DB
+        cursor.execute("DELETE FROM companies;")
         for c in COMPANIES_DB:
             # We serialize list/dict structures into JSON strings for database compatibility
             hiring_roles_json = json.dumps(c.get("hiring_roles", []))
