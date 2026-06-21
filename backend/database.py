@@ -340,6 +340,29 @@ def init_db():
             )
         conn.commit()
 
+    # Seed demo job postings if empty
+    cursor.execute("SELECT COUNT(*) FROM job_postings;")
+    jp_count = cursor.fetchone()[0]
+    if jp_count == 0:
+        demo_jobs = [
+            ("1", "Mindful Health", "Mental Health Therapist/Counselor", "Provide mental health therapy and counseling services in Fort Collins.", 60000.0, 90000.0, 75000.0, "YEAR", "Fort Collins, CO", "FULL_TIME", "Full-time", "Associate", 0, 12, 125, "https://linkedin.com/jobs/view/1", "2026-05-01", "2026-06-01", "USD", "Therapy, Counseling, Mental Health"),
+            ("2", "Raising Cane's", "Cashier", "Customer service and cashier role at Raising Cane's.", 15.0, 18.0, 16.5, "HOUR", "Fort Collins, CO", "PART_TIME", "Part-time", "Entry level", 0, 5, 45, "https://linkedin.com/jobs/view/2", "2026-05-05", "2026-06-05", "USD", "Customer Service, Cashiering"),
+            ("3", "Stripe", "Software Engineer - AI", "Build financial infrastructure powered by AI.", 150000.0, 220000.0, 185000.0, "YEAR", "San Francisco, CA", "FULL_TIME", "Full-time", "Mid-Senior", 1, 85, 450, "https://linkedin.com/jobs/view/3", "2026-05-10", "2026-06-10", "USD", "Python, React, Stripe API, Machine Learning"),
+            ("4", "Razorpay", "Product Manager", "Lead payment product lines in Bangalore.", 1200000.0, 2000000.0, 1600000.0, "YEAR", "Bangalore, India", "FULL_TIME", "Full-time", "Mid-Senior", 0, 30, 210, "https://linkedin.com/jobs/view/4", "2026-05-12", "2026-06-12", "INR", "Product Management, Fintech, SQL"),
+        ]
+        ph = "%s" if is_postgres else "?"
+        for row in demo_jobs:
+            cursor.execute(
+                f"""INSERT INTO job_postings (
+                    job_id, company_name, title, description, min_salary, max_salary,
+                    normalized_salary, pay_period, location, work_type, formatted_work_type,
+                    formatted_experience_level, remote_allowed, applies, views, job_posting_url,
+                    listed_time, expiry, currency, skills_desc
+                ) VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})""",
+                row
+            )
+        conn.commit()
+
     conn.close()
 
 # Auto-initialize database on import of this module
