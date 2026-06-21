@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Environment & secrets
+.env
+*.env
+
+# Databases
+*.db
+*.sqlite3
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Misc
+.DS_Store
+Thumbs.db
+*.log
+
+# Large data files (too big for GitHub — download from Kaggle)
+backend/*.csv
+backend/*.db
+backend/*.sqlite
