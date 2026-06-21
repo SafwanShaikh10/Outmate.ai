@@ -326,10 +326,12 @@ class RetrievalAgent(AgentBase):
         if requested_location:
             filters["location"] = requested_location
             logger.info(f"[{self.name}] Extracted location constraint from query: '{requested_location}'")
-        elif "us" in strategy_lower or "us" in query_lower:
-            filters["location"] = "US"
-        elif "europe" in strategy_lower:
-            filters["location"] = "Europe"
+        else:
+            import re
+            if re.search(r'\b(us|usa|united states)\b', strategy_lower) or re.search(r'\b(us|usa|united states)\b', query_lower):
+                filters["location"] = "US"
+            elif re.search(r'\b(europe|eu)\b', strategy_lower) or re.search(r'\b(europe|eu)\b', query_lower):
+                filters["location"] = "Europe"
 
         # Determine competitor filter
         if "devai" in query_lower or "devai" in strategy_lower:
@@ -374,17 +376,17 @@ class RetrievalAgent(AgentBase):
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 domain TEXT,
-                industry TEXT,
+                industry TEXT (values: 'AI SaaS', 'Fintech', 'Data Infrastructure', 'Cybersecurity', etc.),
                 description TEXT,
-                location TEXT,
-                size TEXT,
-                funding_stage TEXT,
-                funding_amount TEXT,
-                growth_rate TEXT,
-                hiring_status TEXT,
-                hiring_roles TEXT (JSON string list),
-                tech_stack TEXT (JSON string list),
-                competitors_used TEXT (JSON string list),
+                location TEXT (values: 'US', 'Europe', etc.),
+                size TEXT (values: '50-100', '100-250', '20-50', '250-500'),
+                funding_stage TEXT (values: 'Seed', 'Series A', 'Series B', 'Series C'),
+                funding_amount TEXT (values: '$12M', '$28M', '$3M', '$65M'),
+                growth_rate TEXT (values: '150% YoY', '80% YoY', '300% YoY', '45% YoY', '120% YoY', '200% YoY' - DO NOT filter growth_rate using string matches like '%high%' or '%growth%'. Always leave this column unfiltered in SQL and let the GTM Strategy Agent score growth rate instead!),
+                hiring_status TEXT (values: 'Aggressive hiring', 'Moderate hiring', 'Frozen' - DO NOT filter hiring_status using string matches like '%aggressively%'. If filtering for hiring status, match using LIKE '%hiring%' or '%aggressive%' or '%moderate%' or do not filter at all!),
+                hiring_roles TEXT (JSON string list, e.g. ["AI Engineers", "VP of Sales"]),
+                tech_stack TEXT (JSON string list, e.g. ["React", "Python"]),
+                competitors_used TEXT (JSON string list, e.g. ["DevAI Corp", "Okta Inc"]),
                 current_contracts TEXT (JSON string list),
                 signals TEXT (JSON string dict)
             )
@@ -963,12 +965,17 @@ class CriticAgent(AgentBase):
         if requested_location:
             filter_loc = filters.get("location", "")
             if filter_loc and filter_loc.lower() == requested_location.lower() and len(companies) == 0:
-                feedback = (f"APPROVED: The query requested location '{requested_location}'. "
-                            f"The retrieval correctly filtered by this location but found 0 records "
-                            f"(no companies exist in the database for this location). "
-                            f"This is a correct and valid result — location constraint must NOT be relaxed.")
-                logger.info(f"[{self.name}] {feedback}")
-                return True, feedback
+                # ONLY approve if the ONLY filters applied were location and optionally industry/entity type.
+                # If there are other filters like growth_rate, hiring_status, size, etc., then those might have caused the 0 results.
+                # In that case, do NOT immediately approve. Let the validation reject the plan to relax those filters.
+                non_location_filters = [k for k in filters.keys() if k not in ["location", "industry", "entity_type"]]
+                if not non_location_filters:
+                    feedback = (f"APPROVED: The query requested location '{requested_location}'. "
+                                f"The retrieval correctly filtered by this location but found 0 records "
+                                f"(no companies exist in the database for this location). "
+                                f"This is a correct and valid result — location constraint must NOT be relaxed.")
+                    logger.info(f"[{self.name}] {feedback}")
+                    return True, feedback
 
         if self.use_llm:
             prompt = f"""
@@ -981,7 +988,7 @@ class CriticAgent(AgentBase):
             Retrieved Companies: {json.dumps([c['name'] for c in companies])}
             Requested Location: "{requested_location if requested_location else 'None'}"
             
-            Important: If Requested Location is NOT 'None' and Applied Filters correctly include that location, the result is VALID even if 0 companies were retrieved (the database may simply have no entries for that location). Do NOT reject the plan just because the list is empty when the location filter is correct.
+            Important: If Requested Location is NOT 'None' and Applied Filters correctly include that location, the result is VALID even if 0 companies were retrieved ONLY IF the database actually contains no companies for that location. If there are other filters applied (like growth_rate, hiring_status, size, or tech_stack) that might have caused the 0 results, you MUST return "is_valid": false and instruct the planner to remove/relax those non-location constraints.
             
             Is this result set valid and fully relevant to the user query?
             You must return a JSON object with:
