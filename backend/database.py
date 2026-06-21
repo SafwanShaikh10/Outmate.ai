@@ -142,6 +142,82 @@ def init_db():
             );
         """)
 
+    # Create yc_companies table
+    if is_postgres:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS yc_companies (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(255),
+                vertical VARCHAR(100),
+                year INTEGER,
+                batch VARCHAR(20),
+                url TEXT,
+                description TEXT
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS job_postings (
+                id SERIAL PRIMARY KEY,
+                job_id TEXT,
+                company_name TEXT,
+                title TEXT,
+                description TEXT,
+                min_salary NUMERIC,
+                max_salary NUMERIC,
+                normalized_salary NUMERIC,
+                pay_period TEXT,
+                location TEXT,
+                work_type TEXT,
+                formatted_work_type TEXT,
+                formatted_experience_level TEXT,
+                remote_allowed INTEGER,
+                applies INTEGER,
+                views INTEGER,
+                job_posting_url TEXT,
+                listed_time TEXT,
+                expiry TEXT,
+                currency TEXT,
+                skills_desc TEXT
+            );
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS yc_companies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                vertical TEXT,
+                year INTEGER,
+                batch TEXT,
+                url TEXT,
+                description TEXT
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS job_postings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT,
+                company_name TEXT,
+                title TEXT,
+                description TEXT,
+                min_salary REAL,
+                max_salary REAL,
+                normalized_salary REAL,
+                pay_period TEXT,
+                location TEXT,
+                work_type TEXT,
+                formatted_work_type TEXT,
+                formatted_experience_level TEXT,
+                remote_allowed INTEGER,
+                applies INTEGER,
+                views INTEGER,
+                job_posting_url TEXT,
+                listed_time TEXT,
+                expiry TEXT,
+                currency TEXT,
+                skills_desc TEXT
+            );
+        """)
+
     conn.commit()
 
     # Check if companies table is empty
@@ -228,6 +304,40 @@ def init_db():
                 a["price_amount"], a["price_currency_code"]
             ))
 
+        conn.commit()
+
+    # Seed demo YC companies if empty
+    cursor.execute("SELECT COUNT(*) FROM yc_companies;")
+    yc_count = cursor.fetchone()[0]
+    if yc_count == 0:
+        demo_yc = [
+            ("Airbnb", "Consumer", 2009, "W09", "http://airbnb.com", "Airbnb is a marketplace for short-term home rentals in the US and worldwide."),
+            ("Dropbox", "SaaS", 2007, "S07", "http://dropbox.com", "Dropbox is a cloud storage and file sync platform used by individuals and businesses in the US."),
+            ("Stripe", "Fintech", 2010, "S10", "http://stripe.com", "Stripe is a payment processing platform for internet businesses, primarily in the US."),
+            ("Reddit", "Consumer", 2005, "S05", "http://reddit.com", "Reddit is a community-based content aggregator platform. Consumer vertical."),
+            ("Kiko", "Consumer", 2005, "S05", "http://kiko.com", "Kiko is an online calendar startup from YC Batch S05. Consumer vertical."),
+            ("Parakey", "Consumer", 2005, "W05", "http://parakey.com", "Parakey is a web operating system startup from YC Batch W05. Consumer vertical."),
+            ("Razorpay", "Fintech", 2015, "W15", "http://razorpay.com", "Razorpay is a leading payment gateway in India, serving businesses across the country."),
+            ("ClearTax", "Fintech", 2011, "W11", "http://cleartax.in", "ClearTax is an India-based tax filing and financial services platform."),
+            ("Meesho", "Consumer", 2015, "W15", "http://meesho.com", "Meesho is a social commerce platform in India connecting sellers and resellers."),
+            ("RedCarpetUp", "Fintech", 2015, "S15", "http://redcarpetup.com", "RedCarpetUp provides credit and financial products to underserved consumers in India."),
+            ("Kisan Network", "B2B", 2016, "S16", "http://kisannetwork.com", "Kisan Network connects Indian farmers to buyers directly, improving their income in India."),
+            ("Innov8", "B2B", 2015, "S15", "http://innov8.work", "Innov8 is a co-working space startup based in India."),
+            ("JustRide", "Consumer", 2016, "W16", "http://justride.in", "JustRide is a vehicle rental platform operating in India."),
+            ("Posterous", "Consumer", 2008, "W08", "http://posterous.com", "Posterous is a blogging platform in the US that simplifies sharing content online."),
+            ("Custora", "SaaS", 2010, "W10", "http://custora.com", "Custora is an AI-powered customer analytics platform for ecommerce companies in the US."),
+            ("Heap", "SaaS", 2013, "W13", "http://heapanalytics.com", "Heap is an analytics platform for web and mobile products used by companies in the US."),
+            ("Flexport", "B2B", 2013, "W14", "http://flexport.com", "Flexport is a modern freight forwarding and logistics platform operating in the US."),
+            ("Next Caller", "SaaS", 2012, "S12", "http://nextcaller.com", "Next Caller provides real-time caller verification and fraud prevention in the US."),
+            ("SimplyInsured", "Fintech", 2012, "S12", "http://simplyinsured.com", "SimplyInsured helps small businesses compare and purchase health insurance in the US."),
+            ("One Month", "Consumer", 2013, "S13", "http://onemonth.com", "One Month offers online coding courses for beginners in the US."),
+        ]
+        ph = "%s" if is_postgres else "?"
+        for row in demo_yc:
+            cursor.execute(
+                f"INSERT INTO yc_companies (name, vertical, year, batch, url, description) VALUES ({ph},{ph},{ph},{ph},{ph},{ph})",
+                row
+            )
         conn.commit()
 
     conn.close()

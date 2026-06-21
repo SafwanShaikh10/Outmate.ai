@@ -7,7 +7,7 @@ import {
   Briefcase, Code2, Users, Target, ChevronDown, ChevronUp, Database, Trash2
 } from 'lucide-react';
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const PRESET_QUERIES = [
   "Find high-growth AI SaaS companies in the US and generate personalized outbound hooks for their VP Sales.",
