@@ -28,7 +28,6 @@ dist/
 Thumbs.db
 *.log
 
-# Large data files (too big for GitHub — download from Kaggle)
-backend/*.csv
+# Databases (too big for GitHub — download from Kaggle or seed dynamically)
 backend/*.db
 backend/*.sqlite
