@@ -150,7 +150,10 @@ class AgentBase:
 
     def _call_gemini(self, prompt: str, json_mode: bool = False) -> str:
         try:
-            import google.generativeai as genai
+            try:
+                import google.generativeai as genai
+            except ImportError:
+                raise ImportError("google-generativeai is not installed. Install it with: pip install google-generativeai")
             genai.configure(api_key=GEMINI_API_KEY)
             model = genai.GenerativeModel('gemini-1.5-flash')
             
