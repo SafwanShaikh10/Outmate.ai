@@ -7,9 +7,9 @@
 ## Live Demo
 
 ```
-Frontend:  http://localhost:5173
-Backend:   http://localhost:8000
-API Docs:  http://localhost:8000/docs
+Frontend:  https://outmate-ai-coral.vercel.app/
+Backend:   https://outmate-ai-backend-1.onrender.com/
+API Docs:  https://outmate-ai-backend-1.onrender.com/docs
 ```
 
 ---
@@ -228,13 +228,13 @@ python -m pytest backend/test_orchestrator.py -v
 ```
 
 **Test coverage:**
-- ✅ Database search filters
-- ✅ Query hash / caching
-- ✅ Full orchestrator execution stream
-- ✅ Self-correction loop
-- ✅ Acquisitions query
-- ✅ Job postings query
-- ✅ Unknown company filtering
+- [x] Database search filters
+- [x] Query hash / caching
+- [x] Full orchestrator execution stream
+- [x] Self-correction loop
+- [x] Acquisitions query
+- [x] Job postings query
+- [x] Unknown company filtering
 
 ---
 
@@ -242,15 +242,15 @@ python -m pytest backend/test_orchestrator.py -v
 
 | Feature | Description |
 |---|---|
-| 🧠 **LLM Query Understanding** | Groq LLM parses intent, location, industry from free-text |
-| 🔄 **Self-Correction Loops** | Critic Agent rejects bad plans; Orchestrator retries with fixed filters |
-| 📍 **Location Filtering** | Location constraints are strictly enforced — India results stay in India |
-| 🚫 **No Unknown Companies** | Unresolvable company names are filtered out automatically |
-| 💾 **Query Cache** | MD5-keyed result cache with view/clear API endpoints |
-| 📡 **SSE Streaming** | Results stream live step-by-step as agents complete |
-| 🎯 **ICP Scoring** | Fit, Intent, Growth scores per company |
-| ✉️ **Multi-Persona Outreach** | Personalized CEO / VP Sales / CTO email templates |
-| 🔁 **Graceful Fallback** | Rules-based parser activates if LLM is unavailable |
+| **LLM Query Understanding** | Groq LLM parses intent, location, industry from free-text |
+| **Self-Correction Loops** | Critic Agent rejects bad plans; Orchestrator retries with fixed filters |
+| **Location Filtering** | Location constraints are strictly enforced — India results stay in India |
+| **No Unknown Companies** | Unresolvable company names are filtered out automatically |
+| **Query Cache** | MD5-keyed result cache with view/clear API endpoints |
+| **SSE Streaming** | Results stream live step-by-step as agents complete |
+| **ICP Scoring** | Fit, Intent, Growth scores per company |
+| **Multi-Persona Outreach** | Personalized CEO / VP Sales / CTO email templates |
+| **Graceful Fallback** | Rules-based parser activates if LLM is unavailable |
 
 ---
 
