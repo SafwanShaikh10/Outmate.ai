@@ -124,11 +124,11 @@ class AgentBase:
                 )
                 return response.choices[0].message.content
             except Exception as e:
-                # If Groq fails with llama-3.3, try llama3-70b-8192 as fallback
-                if "groq.com" in base_url and model_name != "llama3-70b-8192":
-                    logger.warning(f"Failed with {model_name}, trying llama3-70b-8192...")
+                # If Groq fails with llama-3.3, try llama-3.1-8b-instant as fallback
+                if "groq.com" in base_url and model_name != "llama-3.1-8b-instant":
+                    logger.warning(f"Failed with {model_name} due to: {e}. Trying fallback model llama-3.1-8b-instant...")
                     response = client.chat.completions.create(
-                        model="llama3-70b-8192",
+                        model="llama-3.1-8b-instant",
                         messages=messages,
                         temperature=0.1,
                         response_format=response_format
@@ -136,7 +136,7 @@ class AgentBase:
                     return response.choices[0].message.content
                 # If xAI fails with grok-3, try grok-2-1212 as fallback
                 elif "x.ai" in base_url and model_name != "grok-2-1212":
-                    logger.warning(f"Failed with {model_name}, trying grok-2-1212...")
+                    logger.warning(f"Failed with {model_name} due to: {e}. Trying fallback model grok-2-1212...")
                     response = client.chat.completions.create(
                         model="grok-2-1212",
                         messages=messages,
@@ -343,12 +343,8 @@ class RetrievalAgent(AgentBase):
         elif "competitor" in query_lower:
             filters["competitors_used"] = "DevAI Corp"
 
-        # Simulate over-constrained filters on attempt 1 for Fintech query to trigger Critic rejection
-        if "fintech" in query_lower and attempt == 1:
-            filters["location"] = "Europe"
-            filters["hiring"] = True
-            
         logger.info(f"[{self.name}] Applying SQL parameters: {filters}")
+
 
         # Execute dynamic SQL query
         import sqlite3
@@ -366,7 +362,9 @@ class RetrievalAgent(AgentBase):
         is_yc_query = any(k in query_lower or k in strategy_lower for k in ["yc ", "yc", "ycombinator", "y-combinator", "y combinator", "batch", "vertical"]) and not is_acquisition_query
         is_jobs_query = any(k in query_lower or k in strategy_lower for k in ["job", "posting", "postings", "salary", "role", "work type", "experience level", "hiring status", "work_type"]) and not is_acquisition_query and not is_yc_query
 
+        _llm_sql_ok = False
         if self.use_llm:
+
             prompt = f"""
             You are a GTM SQL Retrieval Agent.
             Convert the user query and planner's strategy into a structured filter dictionary and a clean SQL query.
@@ -469,6 +467,7 @@ class RetrievalAgent(AgentBase):
             Use ? as placeholders in your SQL query.
             Ensure your response is valid JSON.
             """
+            _llm_sql_ok = False
             try:
                 raw = self.query_llm(prompt, json_mode=True)
                 payload = json.loads(raw)
@@ -487,11 +486,13 @@ class RetrievalAgent(AgentBase):
                 is_jobs_query = (target_table == "job_postings")
                 if not is_sqlite:
                     sql = sql.replace("?", "%s")
+                _llm_sql_ok = True
             except Exception as e:
                 logger.warning(f"LLM Retrieval failed, falling back to rules-based query: {e}")
         
         # Build rules-based fallback query if not LLM or if LLM failed
-        if not self.use_llm or 'sql' not in locals():
+        _use_rules_based = (not self.use_llm) or (self.use_llm and not _llm_sql_ok)
+        if _use_rules_based:
             import re
             
             # Determine filters dynamically from query
@@ -688,7 +689,71 @@ class RetrievalAgent(AgentBase):
                 """
                 params = companies_params + yc_params
 
-        cursor.execute(sql, params)
+        try:
+            cursor.execute(sql, params)
+        except Exception as sql_err:
+            logger.warning(f"[{self.name}] SQL execution failed ({sql_err}), rebuilding with rules-based query...")
+            # Rebuild SQL using rules-based approach
+            import re as _re
+            params = []
+            loc_val2 = self.extract_location_from_query(query)
+            industry_val2 = None
+            for ind in ["ai", "saas", "fintech", "finance", "data", "cybersecurity", "security", "consumer", "b2b", "healthcare", "biotech", "education", "marketplace"]:
+                if ind in query_lower:
+                    industry_val2 = ind
+                    break
+            role_val2 = None
+            for r in ["marketing", "engineer", "therapist", "manager", "director", "developer", "designer", "coordinator", "sales", "executive"]:
+                if r in query_lower:
+                    role_val2 = r
+                    break
+            year_val2 = None
+            years2 = _re.findall(r'\b(20\d{2}|19\d{2})\b', query)
+            if years2:
+                year_val2 = int(years2[0])
+
+            if is_acquisition_query:
+                sql = f"""
+                    SELECT acq.* FROM acquisitions acq
+                    LEFT JOIN yc_companies yc ON LOWER(acq.company_name) = LOWER(yc.name)
+                    LEFT JOIN companies c ON LOWER(acq.company_name) = LOWER(c.name)
+                    WHERE 1=1
+                """
+                if industry_val2:
+                    sql += f" AND (LOWER(acq.company_category_list) LIKE {placeholder} OR LOWER(acq.acquirer_category_list) LIKE {placeholder} OR LOWER(yc.vertical) LIKE {placeholder} OR LOWER(c.industry) LIKE {placeholder})"
+                    params.extend([f"%{industry_val2}%"] * 4)
+                sql += " LIMIT 15"
+            elif is_yc_query:
+                sql = "SELECT * FROM yc_companies WHERE 1=1"
+                if industry_val2:
+                    sql += f" AND (LOWER(vertical) LIKE {placeholder} OR LOWER(description) LIKE {placeholder})"
+                    params.extend([f"%{industry_val2}%", f"%{industry_val2}%"])
+                if year_val2:
+                    sql += f" AND year = {placeholder}"
+                    params.append(year_val2)
+                sql += " LIMIT 15"
+            elif is_jobs_query:
+                sql = f"""
+                    SELECT jp.* FROM job_postings jp
+                    LEFT JOIN yc_companies yc ON LOWER(jp.company_name) = LOWER(yc.name)
+                    LEFT JOIN companies c ON LOWER(jp.company_name) = LOWER(c.name)
+                    WHERE 1=1
+                """
+                if loc_val2:
+                    sql += f" AND LOWER(jp.location) LIKE {placeholder}"
+                    params.append(f"%{loc_val2.lower()}%")
+                if role_val2:
+                    sql += f" AND LOWER(jp.title) LIKE {placeholder}"
+                    params.append(f"%{role_val2}%")
+                sql += " LIMIT 15"
+            else:
+                sql = "SELECT id, name, domain, industry, description, location, size, funding_stage, funding_amount, growth_rate, hiring_status, hiring_roles, tech_stack, competitors_used, current_contracts, signals, why_this_result FROM companies WHERE 1=1 LIMIT 15"
+
+            try:
+                cursor.execute(sql, params)
+            except Exception as fallback_err:
+                logger.error(f"[{self.name}] Fallback SQL also failed: {fallback_err}")
+                cursor.execute("SELECT id, name, domain, industry, description, location, size, funding_stage, funding_amount, growth_rate, hiring_status, hiring_roles, tech_stack, competitors_used, current_contracts, signals, why_this_result FROM companies LIMIT 15")
         
         # Format display query by replacing placeholders with raw values for visualization
         display_query = sql
@@ -1086,12 +1151,12 @@ class GTMStrategyAgent(AgentBase):
             # Enrich company record
             comp_record = {
                 "id": comp.get("id"),
-                "name": comp["name"],
-                "domain": comp["domain"],
-                "industry": comp["industry"],
-                "location": comp["location"],
-                "funding": f"{comp['funding_stage']} ({comp.get('funding_amount', 'N/A')})",
-                "hiring": comp["hiring_status"],
+                "name": comp.get("name", "Unknown Company"),
+                "domain": comp.get("domain", ""),
+                "industry": comp.get("industry", "Unknown Industry"),
+                "location": comp.get("location", "US"),
+                "funding": f"{comp.get('funding_stage', 'N/A')} ({comp.get('funding_amount', 'N/A')})",
+                "hiring": comp.get("hiring_status", "N/A"),
                 "icp_scores": {
                     "fit": round(fit_score, 2),
                     "intent": round(intent_score, 2),
@@ -1104,7 +1169,7 @@ class GTMStrategyAgent(AgentBase):
             
             # Record signals
             signals_out.append({
-                "company": comp["name"],
+                "company": comp.get("name", "Unknown Company"),
                 "hiring_roles": comp.get("hiring_roles", []),
                 "tech_stack": comp.get("tech_stack", []),
                 "competitors_used": comp.get("competitors_used", []),

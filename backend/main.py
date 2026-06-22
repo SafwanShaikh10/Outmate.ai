@@ -92,6 +92,8 @@ async def health_check():
     Check if the API server is alive and report LLM configuration.
     """
     import os
+    from backend.database import is_seeding_complete
+    
     grok_key = os.environ.get("GROK_API_KEY", "")
     gemini_key = os.environ.get("GEMINI_API_KEY", "")
     openai_key = os.environ.get("OPENAI_API_KEY", "")
@@ -109,6 +111,7 @@ async def health_check():
         "status": "healthy",
         "timestamp": time.time(),
         "llm_mode": llm_mode,
+        "database_seeding_complete": is_seeding_complete,
         "has_keys": {
             "grok": bool(grok_key),
             "gemini": bool(gemini_key),

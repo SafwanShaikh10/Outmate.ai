@@ -26,7 +26,12 @@ def get_connection():
     else:
         # SQLite local database
         db_path = os.path.join(os.path.dirname(__file__), "gtm_database.db")
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, timeout=30.0)
+        # Enable WAL mode so concurrent reads during background seeding do not block
+        try:
+            conn.execute("PRAGMA journal_mode=WAL;")
+        except Exception:
+            pass
         return conn
 
 def fetch_all_as_dicts(cursor) -> list:
@@ -38,15 +43,25 @@ def fetch_all_as_dicts(cursor) -> list:
     columns = [col[0] for col in cursor.description]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
-def init_db():
-    """
-    Creates tables if they do not exist and auto-seeds companies.
-    """
-    conn = get_connection()
-    cursor = conn.cursor()
+import threading
+import logging
 
-    is_postgres = DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://")
+logger = logging.getLogger("gtm_database")
+# Configure logger to be visible
+if not logger.handlers:
+    sh = logging.StreamHandler()
+    sh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    logger.addHandler(sh)
+    logger.setLevel(logging.INFO)
 
+is_seeding_complete = False
+_seeding_started = False
+_seeding_lock = threading.Lock()
+
+def create_tables_schema(cursor, is_postgres: bool):
+    """
+    Creates tables synchronously if they do not exist. Very fast.
+    """
     # Create companies table
     if is_postgres:
         cursor.execute("""
@@ -219,122 +234,93 @@ def init_db():
             );
         """)
 
-    conn.commit()
+def seed_db_background():
+    """
+    Ingests and seeds the tables in a daemon background thread.
+    """
+    global is_seeding_complete
+    logger.info("Database background seeding thread started.")
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
 
-    # Check if companies table needs seeding (re-seed if db has fewer companies than COMPANIES_DB)
-    cursor.execute("SELECT COUNT(*) FROM companies;")
-    count = cursor.fetchone()[0]
-    
-    from backend.mock_db import COMPANIES_DB
-    if count < len(COMPANIES_DB):
-        # Clear and re-seed to pick up any new companies added to COMPANIES_DB
-        cursor.execute("DELETE FROM companies;")
-        for c in COMPANIES_DB:
-            # We serialize list/dict structures into JSON strings for database compatibility
-            hiring_roles_json = json.dumps(c.get("hiring_roles", []))
-            tech_stack_json = json.dumps(c.get("tech_stack", []))
-            competitors_used_json = json.dumps(c.get("competitors_used", []))
-            current_contracts_json = json.dumps(c.get("current_contracts", []))
-            signals_json = json.dumps(c.get("signals", {}))
+        is_postgres = DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://")
 
-            cursor.execute("""
-                INSERT INTO companies (
-                    id, name, domain, industry, description, location, size,
-                    funding_stage, funding_amount, growth_rate, hiring_status,
-                    hiring_roles, tech_stack, competitors_used, current_contracts, signals, why_this_result
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """ if not is_postgres else """
-                INSERT INTO companies (
-                    id, name, domain, industry, description, location, size,
-                    funding_stage, funding_amount, growth_rate, hiring_status,
-                    hiring_roles, tech_stack, competitors_used, current_contracts, signals, why_this_result
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-            """, (
-                c["id"], c["name"], c["domain"], c["industry"], c["description"],
-                c["location"], c["size"], c["funding_stage"], c["funding_amount"],
-                c["growth_rate"], c["hiring_status"], hiring_roles_json, tech_stack_json,
-                competitors_used_json, current_contracts_json, signals_json, c.get("why_this_result", "")
-            ))
+        # 1. Seed companies table
+        cursor.execute("SELECT COUNT(*) FROM companies;")
+        count = cursor.fetchone()[0]
         
-        # Seed acquisitions from CSV if exists, else fallback to mock data
-        csv_path = os.path.join(os.path.dirname(__file__), "acq.csv")
-        if os.path.exists(csv_path):
-            acq_rows = []
-            with open(csv_path, mode='r', encoding='latin-1') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    price_str = row.get('price_amount', '0')
-                    price_amount = float(price_str) if price_str and price_str.strip() else 0.0
-                    year_str = row.get('acquired_year', '0')
-                    acquired_year = int(float(year_str)) if year_str and year_str.strip() else 0
-                    acq_rows.append((
-                        row.get('company_permalink', ''),
-                        row.get('company_name', ''),
-                        row.get('company_category_list', ''),
-                        row.get('company_country_code', ''),
-                        row.get('company_state_code', ''),
-                        row.get('company_region', ''),
-                        row.get('company_city', ''),
-                        row.get('acquirer_permalink', ''),
-                        row.get('acquirer_name', ''),
-                        row.get('acquirer_category_list', ''),
-                        row.get('acquirer_country_code', ''),
-                        row.get('acquirer_state_code', ''),
-                        row.get('acquirer_region', ''),
-                        row.get('acquirer_city', ''),
-                        row.get('acquired_at', ''),
-                        row.get('acquired_month', ''),
-                        row.get('acquired_quarter', ''),
-                        acquired_year,
-                        price_amount,
-                        row.get('price_currency_code', 'USD')
-                    ))
-            
-            sql_query = """
-                INSERT INTO acquisitions (
-                    company_permalink, company_name, company_category_list, company_country_code,
-                    company_state_code, company_region, company_city, acquirer_permalink, acquirer_name,
-                    acquirer_category_list, acquirer_country_code, acquirer_state_code, acquirer_region,
-                    acquirer_city, acquired_at, acquired_month, acquired_quarter, acquired_year,
-                    price_amount, price_currency_code
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """ if not is_postgres else """
-                INSERT INTO acquisitions (
-                    company_permalink, company_name, company_category_list, company_country_code,
-                    company_state_code, company_region, company_city, acquirer_permalink, acquirer_name,
-                    acquirer_category_list, acquirer_country_code, acquirer_state_code, acquirer_region,
-                    acquirer_city, acquired_at, acquired_month, acquired_quarter, acquired_year,
-                    price_amount, price_currency_code
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-            """
-            cursor.executemany(sql_query, acq_rows)
-        else:
-            dummy_acqs = [
-                {
-                    "company_permalink": "/organization/cognitive-ai",
-                    "company_name": "CognitiveAI",
-                    "company_category_list": "AI|SaaS|Enterprise",
-                    "company_country_code": "USA",
-                    "company_state_code": "CA",
-                    "company_region": "SF Bay Area",
-                    "company_city": "San Francisco",
-                    "acquirer_permalink": "/organization/outmate-corp",
-                    "acquirer_name": "Outmate Corp",
-                    "acquirer_category_list": "B2B|Marketing|Sales",
-                    "acquirer_country_code": "USA",
-                    "acquirer_state_code": "NY",
-                    "acquirer_region": "New York City",
-                    "acquirer_city": "New York",
-                    "acquired_at": "2026-05-10",
-                    "acquired_month": "2026-05",
-                    "acquired_quarter": "2026-Q2",
-                    "acquired_year": 2026,
-                    "price_amount": 150000000.0,
-                    "price_currency_code": "USD"
-                }
-            ]
-            for a in dummy_acqs:
+        from backend.mock_db import COMPANIES_DB
+        if count < len(COMPANIES_DB):
+            logger.info(f"Seeding companies table (current count {count} < expected {len(COMPANIES_DB)})...")
+            cursor.execute("DELETE FROM companies;")
+            for c in COMPANIES_DB:
+                hiring_roles_json = json.dumps(c.get("hiring_roles", []))
+                tech_stack_json = json.dumps(c.get("tech_stack", []))
+                competitors_used_json = json.dumps(c.get("competitors_used", []))
+                current_contracts_json = json.dumps(c.get("current_contracts", []))
+                signals_json = json.dumps(c.get("signals", {}))
+
                 cursor.execute("""
+                    INSERT INTO companies (
+                        id, name, domain, industry, description, location, size,
+                        funding_stage, funding_amount, growth_rate, hiring_status,
+                        hiring_roles, tech_stack, competitors_used, current_contracts, signals, why_this_result
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """ if not is_postgres else """
+                    INSERT INTO companies (
+                        id, name, domain, industry, description, location, size,
+                        funding_stage, funding_amount, growth_rate, hiring_status,
+                        hiring_roles, tech_stack, competitors_used, current_contracts, signals, why_this_result
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                """, (
+                    c["id"], c["name"], c["domain"], c["industry"], c["description"],
+                    c["location"], c["size"], c["funding_stage"], c["funding_amount"],
+                    c["growth_rate"], c["hiring_status"], hiring_roles_json, tech_stack_json,
+                    competitors_used_json, current_contracts_json, signals_json, c.get("why_this_result", "")
+                ))
+            conn.commit()
+            logger.info("Companies table seeded.")
+
+        # 2. Seed acquisitions table
+        cursor.execute("SELECT COUNT(*) FROM acquisitions;")
+        acq_count = cursor.fetchone()[0]
+        if acq_count == 0:
+            logger.info("Seeding acquisitions table from CSV...")
+            csv_path = os.path.join(os.path.dirname(__file__), "acq.csv")
+            if os.path.exists(csv_path):
+                acq_rows = []
+                with open(csv_path, mode='r', encoding='latin-1') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        price_str = row.get('price_amount', '0')
+                        price_amount = float(price_str) if price_str and price_str.strip() else 0.0
+                        year_str = row.get('acquired_year', '0')
+                        acquired_year = int(float(year_str)) if year_str and year_str.strip() else 0
+                        acq_rows.append((
+                            row.get('company_permalink', ''),
+                            row.get('company_name', ''),
+                            row.get('company_category_list', ''),
+                            row.get('company_country_code', ''),
+                            row.get('company_state_code', ''),
+                            row.get('company_region', ''),
+                            row.get('company_city', ''),
+                            row.get('acquirer_permalink', ''),
+                            row.get('acquirer_name', ''),
+                            row.get('acquirer_category_list', ''),
+                            row.get('acquirer_country_code', ''),
+                            row.get('acquirer_state_code', ''),
+                            row.get('acquirer_region', ''),
+                            row.get('acquirer_city', ''),
+                            row.get('acquired_at', ''),
+                            row.get('acquired_month', ''),
+                            row.get('acquired_quarter', ''),
+                            acquired_year,
+                            price_amount,
+                            row.get('price_currency_code', 'USD')
+                        ))
+                
+                sql_query = """
                     INSERT INTO acquisitions (
                         company_permalink, company_name, company_category_list, company_country_code,
                         company_state_code, company_region, company_city, acquirer_permalink, acquirer_name,
@@ -350,151 +336,227 @@ def init_db():
                         acquirer_city, acquired_at, acquired_month, acquired_quarter, acquired_year,
                         price_amount, price_currency_code
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-                """, (
-                    a["company_permalink"], a["company_name"], a["company_category_list"], a["company_country_code"],
-                    a["company_state_code"], a["company_region"], a["company_city"], a["acquirer_permalink"], a["acquirer_name"],
-                    a["acquirer_category_list"], a["acquirer_country_code"], a["acquirer_state_code"], a["acquirer_region"],
-                    a["acquirer_city"], a["acquired_at"], a["acquired_month"], a["acquired_quarter"], a["acquired_year"],
-                    a["price_amount"], a["price_currency_code"]
-                ))
-
-        conn.commit()
-
-    # Seed YC companies if empty
-    cursor.execute("SELECT COUNT(*) FROM yc_companies;")
-    yc_count = cursor.fetchone()[0]
-    if yc_count == 0:
-        csv_path = os.path.join(os.path.dirname(__file__), "companies.csv")
-        if os.path.exists(csv_path):
-            yc_rows = []
-            with open(csv_path, encoding='utf-8', errors='replace') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    year_str = row.get('year', '0') or '0'
-                    year = int(float(year_str)) if year_str.strip() else 0
-                    yc_rows.append((
-                        row.get('name', ''),
-                        row.get('vertical', ''),
-                        year,
-                        row.get('batch', ''),
-                        row.get('url', ''),
-                        row.get('description', '')
+                """
+                cursor.executemany(sql_query, acq_rows)
+            else:
+                dummy_acqs = [
+                    {
+                        "company_permalink": "/organization/cognitive-ai",
+                        "company_name": "CognitiveAI",
+                        "company_category_list": "AI|SaaS|Enterprise",
+                        "company_country_code": "USA",
+                        "company_state_code": "CA",
+                        "company_region": "SF Bay Area",
+                        "company_city": "San Francisco",
+                        "acquirer_permalink": "/organization/outmate-corp",
+                        "acquirer_name": "Outmate Corp",
+                        "acquirer_category_list": "B2B|Marketing|Sales",
+                        "acquirer_country_code": "USA",
+                        "acquirer_state_code": "NY",
+                        "acquirer_region": "New York City",
+                        "acquirer_city": "New York",
+                        "acquired_at": "2026-05-10",
+                        "acquired_month": "2026-05",
+                        "acquired_quarter": "2026-Q2",
+                        "acquired_year": 2026,
+                        "price_amount": 150000000.0,
+                        "price_currency_code": "USD"
+                    }
+                ]
+                for a in dummy_acqs:
+                    cursor.execute("""
+                        INSERT INTO acquisitions (
+                            company_permalink, company_name, company_category_list, company_country_code,
+                            company_state_code, company_region, company_city, acquirer_permalink, acquirer_name,
+                            acquirer_category_list, acquirer_country_code, acquirer_state_code, acquirer_region,
+                            acquirer_city, acquired_at, acquired_month, acquired_quarter, acquired_year,
+                            price_amount, price_currency_code
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """ if not is_postgres else """
+                        INSERT INTO acquisitions (
+                            company_permalink, company_name, company_category_list, company_country_code,
+                            company_state_code, company_region, company_city, acquirer_permalink, acquirer_name,
+                            acquirer_category_list, acquirer_country_code, acquirer_state_code, acquirer_region,
+                            acquirer_city, acquired_at, acquired_month, acquired_quarter, acquired_year,
+                            price_amount, price_currency_code
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    """, (
+                        a["company_permalink"], a["company_name"], a["company_category_list"], a["company_country_code"],
+                        a["company_state_code"], a["company_region"], a["company_city"], a["acquirer_permalink"], a["acquirer_name"],
+                        a["acquirer_category_list"], a["acquirer_country_code"], a["acquirer_state_code"], a["acquirer_region"],
+                        a["acquirer_city"], a["acquired_at"], a["acquired_month"], a["acquired_quarter"], a["acquired_year"],
+                        a["price_amount"], a["price_currency_code"]
                     ))
-            ph = "%s" if is_postgres else "?"
-            sql = f"INSERT INTO yc_companies (name, vertical, year, batch, url, description) VALUES ({ph},{ph},{ph},{ph},{ph},{ph})"
-            cursor.executemany(sql, yc_rows)
-        else:
-            demo_yc = [
-                ("Airbnb", "Consumer", 2009, "W09", "http://airbnb.com", "Airbnb is a marketplace for short-term home rentals in the US and worldwide."),
-                ("Dropbox", "SaaS", 2007, "S07", "http://dropbox.com", "Dropbox is a cloud storage and file sync platform used by individuals and businesses in the US."),
-                ("Stripe", "Fintech", 2010, "S10", "http://stripe.com", "Stripe is a payment processing platform for internet businesses, primarily in the US."),
-                ("Reddit", "Consumer", 2005, "S05", "http://reddit.com", "Reddit is a community-based content aggregator platform. Consumer vertical."),
-                ("Kiko", "Consumer", 2005, "S05", "http://kiko.com", "Kiko is an online calendar startup from YC Batch S05. Consumer vertical."),
-                ("Parakey", "Consumer", 2005, "W05", "http://parakey.com", "Parakey is a web operating system startup from YC Batch W05. Consumer vertical."),
-                ("Razorpay", "Fintech", 2015, "W15", "http://razorpay.com", "Razorpay is a leading payment gateway in India, serving businesses across the country."),
-                ("ClearTax", "Fintech", 2011, "W11", "http://cleartax.in", "ClearTax is an India-based tax filing and financial services platform."),
-                ("Meesho", "Consumer", 2015, "W15", "http://meesho.com", "Meesho is a social commerce platform in India connecting sellers and resellers."),
-                ("RedCarpetUp", "Fintech", 2015, "S15", "http://redcarpetup.com", "RedCarpetUp provides credit and financial products to underserved consumers in India."),
-                ("Kisan Network", "B2B", 2016, "S16", "http://kisannetwork.com", "Kisan Network connects Indian farmers to buyers directly, improving their income in India."),
-                ("Innov8", "B2B", 2015, "S15", "http://innov8.work", "Innov8 is a co-working space startup based in India."),
-                ("JustRide", "Consumer", 2016, "W16", "http://justride.in", "JustRide is a vehicle rental platform operating in India."),
-                ("Posterous", "Consumer", 2008, "W08", "http://posterous.com", "Posterous is a blogging platform in the US that simplifies sharing content online."),
-                ("Custora", "SaaS", 2010, "W10", "http://custora.com", "Custora is an AI-powered customer analytics platform for ecommerce companies in the US."),
-                ("Heap", "SaaS", 2013, "W13", "http://heapanalytics.com", "Heap is an analytics platform for web and mobile products used by companies in the US."),
-                ("Flexport", "B2B", 2013, "W14", "http://flexport.com", "Flexport is a modern freight forwarding and logistics platform operating in the US."),
-                ("Next Caller", "SaaS", 2012, "S12", "http://nextcaller.com", "Next Caller provides real-time caller verification and fraud prevention in the US."),
-                ("SimplyInsured", "Fintech", 2012, "S12", "http://simplyinsured.com", "SimplyInsured helps small businesses compare and purchase health insurance in the US."),
-                ("One Month", "Consumer", 2013, "S13", "http://onemonth.com", "One Month offers online coding courses for beginners in the US."),
-            ]
-            ph = "%s" if is_postgres else "?"
-            for row in demo_yc:
-                cursor.execute(
-                    f"INSERT INTO yc_companies (name, vertical, year, batch, url, description) VALUES ({ph},{ph},{ph},{ph},{ph},{ph})",
-                    row
-                )
-        conn.commit()
+            conn.commit()
+            logger.info("Acquisitions table seeded.")
 
-    # Seed job postings if empty
-    cursor.execute("SELECT COUNT(*) FROM job_postings;")
-    jp_count = cursor.fetchone()[0]
-    if jp_count == 0:
-        csv_path = os.path.join(os.path.dirname(__file__), "postings.csv")
-        if os.path.exists(csv_path):
-            jp_rows = []
-            with open(csv_path, encoding='utf-8', errors='replace') as f:
-                reader = csv.DictReader(f)
+        # 3. Seed YC companies table
+        cursor.execute("SELECT COUNT(*) FROM yc_companies;")
+        yc_count = cursor.fetchone()[0]
+        if yc_count == 0:
+            logger.info("Seeding yc_companies table from CSV...")
+            csv_path = os.path.join(os.path.dirname(__file__), "companies.csv")
+            if os.path.exists(csv_path):
+                yc_rows = []
+                with open(csv_path, encoding='utf-8', errors='replace') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        year_str = row.get('year', '0') or '0'
+                        year = int(float(year_str)) if year_str.strip() else 0
+                        yc_rows.append((
+                            row.get('name', ''),
+                            row.get('vertical', ''),
+                            year,
+                            row.get('batch', ''),
+                            row.get('url', ''),
+                            row.get('description', '')
+                        ))
+                ph = "%s" if is_postgres else "?"
+                sql = f"INSERT INTO yc_companies (name, vertical, year, batch, url, description) VALUES ({ph},{ph},{ph},{ph},{ph},{ph})"
+                cursor.executemany(sql, yc_rows)
+            else:
+                demo_yc = [
+                    ("Airbnb", "Consumer", 2009, "W09", "http://airbnb.com", "Airbnb is a marketplace for short-term home rentals in the US and worldwide."),
+                    ("Dropbox", "SaaS", 2007, "S07", "http://dropbox.com", "Dropbox is a cloud storage and file sync platform used by individuals and businesses in the US."),
+                    ("Stripe", "Fintech", 2010, "S10", "http://stripe.com", "Stripe is a payment processing platform for internet businesses, primarily in the US."),
+                    ("Reddit", "Consumer", 2005, "S05", "http://reddit.com", "Reddit is a community-based content aggregator platform. Consumer vertical."),
+                    ("Kiko", "Consumer", 2005, "S05", "http://kiko.com", "Kiko is an online calendar startup from YC Batch S05. Consumer vertical."),
+                    ("Parakey", "Consumer", 2005, "W05", "http://parakey.com", "Parakey is a web operating system startup from YC Batch W05. Consumer vertical."),
+                    ("Razorpay", "Fintech", 2015, "W15", "http://razorpay.com", "Razorpay is a leading payment gateway in India, serving businesses across the country."),
+                    ("ClearTax", "Fintech", 2011, "W11", "http://cleartax.in", "ClearTax is an India-based tax filing and financial services platform."),
+                    ("Meesho", "Consumer", 2015, "W15", "http://meesho.com", "Meesho is a social commerce platform in India connecting sellers and resellers."),
+                    ("RedCarpetUp", "Fintech", 2015, "S15", "http://redcarpetup.com", "RedCarpetUp provides credit and financial products to underserved consumers in India."),
+                    ("Kisan Network", "B2B", 2016, "S16", "http://kisannetwork.com", "Kisan Network connects Indian farmers to buyers directly, improving their income in India."),
+                    ("Innov8", "B2B", 2015, "S15", "http://innov8.work", "Innov8 is a co-working space startup based in India."),
+                    ("JustRide", "Consumer", 2016, "W16", "http://justride.in", "JustRide is a vehicle rental platform operating in India."),
+                    ("Posterous", "Consumer", 2008, "W08", "http://posterous.com", "Posterous is a blogging platform in the US that simplifies sharing content online."),
+                    ("Custora", "SaaS", 2010, "W10", "http://custora.com", "Custora is an AI-powered customer analytics platform for ecommerce companies in the US."),
+                    ("Heap", "SaaS", 2013, "W13", "http://heapanalytics.com", "Heap is an analytics platform for web and mobile products used by companies in the US."),
+                    ("Flexport", "B2B", 2013, "W14", "http://flexport.com", "Flexport is a modern freight forwarding and logistics platform operating in the US."),
+                    ("Next Caller", "SaaS", 2012, "S12", "http://nextcaller.com", "Next Caller provides real-time caller verification and fraud prevention in the US."),
+                    ("SimplyInsured", "Fintech", 2012, "S12", "http://simplyinsured.com", "SimplyInsured helps small businesses compare and purchase health insurance in the US."),
+                    ("One Month", "Consumer", 2013, "S13", "http://onemonth.com", "One Month offers online coding courses for beginners in the US."),
+                ]
+                ph = "%s" if is_postgres else "?"
+                for row in demo_yc:
+                    cursor.execute(
+                        f"INSERT INTO yc_companies (name, vertical, year, batch, url, description) VALUES ({ph},{ph},{ph},{ph},{ph},{ph})",
+                        row
+                    )
+            conn.commit()
+            logger.info("yc_companies table seeded.")
+
+        # 4. Seed job postings table
+        cursor.execute("SELECT COUNT(*) FROM job_postings;")
+        jp_count = cursor.fetchone()[0]
+        if jp_count == 0:
+            logger.info("Seeding job_postings table from CSV...")
+            csv_path = os.path.join(os.path.dirname(__file__), "postings.csv")
+            if os.path.exists(csv_path):
+                jp_rows = []
+                with open(csv_path, encoding='utf-8', errors='replace') as f:
+                    reader = csv.DictReader(f)
+                    
+                    def safe_float(val):
+                        try:
+                            return float(val) if val and str(val).strip() else None
+                        except:
+                            return None
+
+                    def safe_int(val):
+                        try:
+                            return int(float(val)) if val and str(val).strip() else None
+                        except:
+                            return None
+
+                    for row in reader:
+                        jp_rows.append((
+                            row.get('job_id', ''),
+                            row.get('company_name', ''),
+                            row.get('title', ''),
+                            (row.get('description', '') or '')[:2000],
+                            safe_float(row.get('min_salary')),
+                            safe_float(row.get('max_salary')),
+                            safe_float(row.get('normalized_salary')),
+                            row.get('pay_period', ''),
+                            row.get('location', ''),
+                            row.get('work_type', ''),
+                            row.get('formatted_work_type', ''),
+                            row.get('formatted_experience_level', ''),
+                            safe_int(row.get('remote_allowed')),
+                            safe_int(row.get('applies')),
+                            safe_int(row.get('views')),
+                            row.get('job_posting_url', ''),
+                            row.get('listed_time', ''),
+                            row.get('expiry', ''),
+                            row.get('currency', ''),
+                            (row.get('skills_desc', '') or '')[:1000]
+                        ))
                 
-                def safe_float(val):
-                    try:
-                        return float(val) if val and str(val).strip() else None
-                    except:
-                        return None
+                ph = "%s" if is_postgres else "?"
+                sql = f"""
+                    INSERT INTO job_postings (
+                        job_id, company_name, title, description,
+                        min_salary, max_salary, normalized_salary,
+                        pay_period, location, work_type, formatted_work_type,
+                        formatted_experience_level, remote_allowed, applies, views,
+                        job_posting_url, listed_time, expiry, currency, skills_desc
+                    ) VALUES (
+                        {ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},
+                        {ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}
+                    );
+                """
+                cursor.executemany(sql, jp_rows)
+            else:
+                demo_jobs = [
+                    ("1", "Mindful Health", "Mental Health Therapist/Counselor", "Provide mental health therapy and counseling services in Fort Collins.", 60000.0, 90000.0, 75000.0, "YEAR", "Fort Collins, CO", "FULL_TIME", "Full-time", "Associate", 0, 12, 125, "https://linkedin.com/jobs/view/1", "2026-05-01", "2026-06-01", "USD", "Therapy, Counseling, Mental Health"),
+                    ("2", "Raising Cane's", "Cashier", "Customer service and cashier role at Raising Cane's.", 15.0, 18.0, 16.5, "HOUR", "Fort Collins, CO", "PART_TIME", "Part-time", "Entry level", 0, 5, 45, "https://linkedin.com/jobs/view/2", "2026-05-05", "2026-06-05", "USD", "Customer Service, Cashiering"),
+                    ("3", "Stripe", "Software Engineer - AI", "Build financial infrastructure powered by AI.", 150000.0, 220000.0, 185000.0, "YEAR", "San Francisco, CA", "FULL_TIME", "Full-time", "Mid-Senior", 1, 85, 450, "https://linkedin.com/jobs/view/3", "2026-05-10", "2026-06-10", "USD", "Python, React, Stripe API, Machine Learning"),
+                    ("4", "Razorpay", "Product Manager", "Lead payment product lines in Bangalore.", 1200000.0, 2000000.0, 1600000.0, "YEAR", "Bangalore, India", "FULL_TIME", "Full-time", "Mid-Senior", 0, 30, 210, "https://linkedin.com/jobs/view/4", "2026-05-12", "2026-06-12", "INR", "Product Management, Fintech, SQL"),
+                ]
+                ph = "%s" if is_postgres else "?"
+                for row in demo_jobs:
+                    cursor.execute(
+                        f"""INSERT INTO job_postings (
+                            job_id, company_name, title, description, min_salary, max_salary,
+                            normalized_salary, pay_period, location, work_type, formatted_work_type,
+                            formatted_experience_level, remote_allowed, applies, views, job_posting_url,
+                            listed_time, expiry, currency, skills_desc
+                        ) VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})""",
+                        row
+                    )
+            conn.commit()
+            logger.info("job_postings table seeded.")
 
-                def safe_int(val):
-                    try:
-                        return int(float(val)) if val and str(val).strip() else None
-                    except:
-                        return None
+        conn.close()
+        is_seeding_complete = True
+        logger.info("Database background seeding successfully completed.")
+    except Exception as e:
+        is_seeding_complete = True # Set to True to not leave app hanging in UI/Checks, but log it
+        logger.error(f"Error seeding database in background thread: {e}", exc_info=True)
 
-                for row in reader:
-                    jp_rows.append((
-                        row.get('job_id', ''),
-                        row.get('company_name', ''),
-                        row.get('title', ''),
-                        (row.get('description', '') or '')[:2000],
-                        safe_float(row.get('min_salary')),
-                        safe_float(row.get('max_salary')),
-                        safe_float(row.get('normalized_salary')),
-                        row.get('pay_period', ''),
-                        row.get('location', ''),
-                        row.get('work_type', ''),
-                        row.get('formatted_work_type', ''),
-                        row.get('formatted_experience_level', ''),
-                        safe_int(row.get('remote_allowed')),
-                        safe_int(row.get('applies')),
-                        safe_int(row.get('views')),
-                        row.get('job_posting_url', ''),
-                        row.get('listed_time', ''),
-                        row.get('expiry', ''),
-                        row.get('currency', ''),
-                        (row.get('skills_desc', '') or '')[:1000]
-                    ))
-            
-            ph = "%s" if is_postgres else "?"
-            sql = f"""
-                INSERT INTO job_postings (
-                    job_id, company_name, title, description,
-                    min_salary, max_salary, normalized_salary,
-                    pay_period, location, work_type, formatted_work_type,
-                    formatted_experience_level, remote_allowed, applies, views,
-                    job_posting_url, listed_time, expiry, currency, skills_desc
-                ) VALUES (
-                    {ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},
-                    {ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph}
-                );
-            """
-            cursor.executemany(sql, jp_rows)
-        else:
-            demo_jobs = [
-                ("1", "Mindful Health", "Mental Health Therapist/Counselor", "Provide mental health therapy and counseling services in Fort Collins.", 60000.0, 90000.0, 75000.0, "YEAR", "Fort Collins, CO", "FULL_TIME", "Full-time", "Associate", 0, 12, 125, "https://linkedin.com/jobs/view/1", "2026-05-01", "2026-06-01", "USD", "Therapy, Counseling, Mental Health"),
-                ("2", "Raising Cane's", "Cashier", "Customer service and cashier role at Raising Cane's.", 15.0, 18.0, 16.5, "HOUR", "Fort Collins, CO", "PART_TIME", "Part-time", "Entry level", 0, 5, 45, "https://linkedin.com/jobs/view/2", "2026-05-05", "2026-06-05", "USD", "Customer Service, Cashiering"),
-                ("3", "Stripe", "Software Engineer - AI", "Build financial infrastructure powered by AI.", 150000.0, 220000.0, 185000.0, "YEAR", "San Francisco, CA", "FULL_TIME", "Full-time", "Mid-Senior", 1, 85, 450, "https://linkedin.com/jobs/view/3", "2026-05-10", "2026-06-10", "USD", "Python, React, Stripe API, Machine Learning"),
-                ("4", "Razorpay", "Product Manager", "Lead payment product lines in Bangalore.", 1200000.0, 2000000.0, 1600000.0, "YEAR", "Bangalore, India", "FULL_TIME", "Full-time", "Mid-Senior", 0, 30, 210, "https://linkedin.com/jobs/view/4", "2026-05-12", "2026-06-12", "INR", "Product Management, Fintech, SQL"),
-            ]
-            ph = "%s" if is_postgres else "?"
-            for row in demo_jobs:
-                cursor.execute(
-                    f"""INSERT INTO job_postings (
-                        job_id, company_name, title, description, min_salary, max_salary,
-                        normalized_salary, pay_period, location, work_type, formatted_work_type,
-                        formatted_experience_level, remote_allowed, applies, views, job_posting_url,
-                        listed_time, expiry, currency, skills_desc
-                    ) VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})""",
-                    row
-                )
-        conn.commit()
+def init_db():
+    """
+    Creates tables if they do not exist and triggers non-blocking background seeding.
+    """
+    global _seeding_started
+    conn = get_connection()
+    cursor = conn.cursor()
+    is_postgres = DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://")
 
+    # 1. Create table schemas synchronously (Fast)
+    create_tables_schema(cursor, is_postgres)
+    conn.commit()
     conn.close()
 
-# Auto-initialize database on import of this module
+    # 2. Trigger asynchronous background seeding
+    with _seeding_lock:
+        if not _seeding_started:
+            _seeding_started = True
+            logger.info("Kicking off background seeder thread.")
+            t = threading.Thread(target=seed_db_background, name="DatabaseSeederThread", daemon=True)
+            t.start()
+
+# Auto-initialize database schema on import of this module
 init_db()
+

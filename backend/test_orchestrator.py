@@ -11,6 +11,13 @@ class TestGTMOrchestrator(unittest.TestCase):
         # Clear global query cache before each test
         QUERY_CACHE.clear()
         self.orchestrator = GTMOrchestrator()
+        # Wait for database background seeding to complete
+        from backend.database import is_seeding_complete
+        import time
+        for _ in range(50):
+            if is_seeding_complete:
+                break
+            time.sleep(0.1)
 
     def test_mock_db_search(self):
         """Test that SQL-backed company search filtering works correctly."""
