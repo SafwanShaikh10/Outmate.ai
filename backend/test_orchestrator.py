@@ -12,12 +12,18 @@ class TestGTMOrchestrator(unittest.TestCase):
         QUERY_CACHE.clear()
         self.orchestrator = GTMOrchestrator()
         # Wait for database background seeding to complete
-        from backend.database import is_seeding_complete
+        import backend.database as db
         import time
         for _ in range(50):
-            if is_seeding_complete:
+            if db.is_seeding_complete:
                 break
             time.sleep(0.1)
+        # Disable live LLM calls during unit tests for deterministic testing and avoiding rate limits
+        self.orchestrator.planner.use_llm = False
+        self.orchestrator.retrieval.use_llm = False
+        self.orchestrator.enrichment.use_llm = False
+        self.orchestrator.critic.use_llm = False
+        self.orchestrator.strategy.use_llm = False
 
     def test_mock_db_search(self):
         """Test that SQL-backed company search filtering works correctly."""
