@@ -481,9 +481,9 @@ class RetrievalAgent(AgentBase):
                 if placeholder_count != len(params):
                     raise ValueError("Placeholder count mismatch")
                     
-                is_acquisition_query = (target_table == "acquisitions")
-                is_yc_query = (target_table == "yc_companies")
-                is_jobs_query = (target_table == "job_postings")
+                is_acquisition_query = is_acquisition_query or (target_table == "acquisitions")
+                is_yc_query = is_yc_query or (target_table == "yc_companies")
+                is_jobs_query = is_jobs_query or (target_table == "job_postings")
                 if not is_sqlite:
                     sql = sql.replace("?", "%s")
                 _llm_sql_ok = True
@@ -691,8 +691,16 @@ class RetrievalAgent(AgentBase):
 
         try:
             cursor.execute(sql, params)
+            results = fetch_all_as_dicts(cursor)
+            if _llm_sql_ok and len(results) == 0:
+                raise ValueError("LLM query returned 0 results")
         except Exception as sql_err:
             logger.warning(f"[{self.name}] SQL execution failed ({sql_err}), rebuilding with rules-based query...")
+            # Restore original rules-based flags for fallback query rebuilding and normalization
+            is_acquisition_query = any(k in query_lower or k in strategy_lower for k in ["acquisition", "acquired", "acquirer", "buyout", "purchase", "merger", "acq"])
+            is_yc_query = any(k in query_lower or k in strategy_lower for k in ["yc ", "yc", "ycombinator", "y-combinator", "y combinator", "batch", "vertical"]) and not is_acquisition_query
+            is_jobs_query = any(k in query_lower or k in strategy_lower for k in ["job", "posting", "postings", "salary", "role", "work type", "experience level", "hiring status", "work_type"]) and not is_acquisition_query and not is_yc_query
+
             # Rebuild SQL using rules-based approach
             import re as _re
             params = []
@@ -751,9 +759,11 @@ class RetrievalAgent(AgentBase):
 
             try:
                 cursor.execute(sql, params)
+                results = fetch_all_as_dicts(cursor)
             except Exception as fallback_err:
                 logger.error(f"[{self.name}] Fallback SQL also failed: {fallback_err}")
                 cursor.execute("SELECT id, name, domain, industry, description, location, size, funding_stage, funding_amount, growth_rate, hiring_status, hiring_roles, tech_stack, competitors_used, current_contracts, signals, why_this_result FROM companies LIMIT 15")
+                results = fetch_all_as_dicts(cursor)
         
         # Format display query by replacing placeholders with raw values for visualization
         display_query = sql
@@ -761,7 +771,6 @@ class RetrievalAgent(AgentBase):
             val = f"'{p}'" if isinstance(p, str) else str(p)
             display_query = display_query.replace(placeholder, val, 1)
 
-        results = fetch_all_as_dicts(cursor)
         conn.close()
 
         # Parse json arrays safely (handling strings vs pre-parsed objects)
@@ -784,8 +793,8 @@ class RetrievalAgent(AgentBase):
         if is_acquisition_query:
             normalized_results = []
             for row in results:
-                company_name = row.get("company_name", "Unknown Company")
-                acquirer_name = row.get("acquirer_name", "Unknown Acquirer")
+                company_name = row.get("company_name") or "Unknown Company"
+                acquirer_name = row.get("acquirer_name") or "Unknown Acquirer"
                 
                 domain = row.get("company_permalink", "")
                 if domain and domain.startswith("/organization/"):
@@ -797,8 +806,11 @@ class RetrievalAgent(AgentBase):
                 price_currency = row.get("price_currency_code", "USD") or "USD"
                 price_str = f"{price_currency} {price:,.0f}" if price > 0 else "Undisclosed Price"
                 
+                row_id = row.get('id')
+                if row_id is None:
+                    row_id = row.get('company_name', 'unknown')
                 normalized = {
-                    "id": f"acq_{row.get('id')}",
+                    "id": f"acq_{row_id}",
                     "name": company_name,
                     "domain": domain,
                     "industry": row.get("company_category_list", "Acquisitions"),
@@ -830,13 +842,16 @@ class RetrievalAgent(AgentBase):
         elif is_yc_query:
             normalized_results = []
             for row in results:
-                company_name = row.get("name", "Unknown Company")
-                url = row.get("url", "")
+                company_name = row.get("name") or "Unknown Company"
+                url = row.get("url") or ""
                 if not url:
                     url = f"http://{company_name.lower().replace(' ', '')}.com"
                 
+                row_id = row.get('id')
+                if row_id is None:
+                    row_id = row.get('name', 'unknown')
                 normalized = {
-                    "id": f"yc_{row.get('id')}",
+                    "id": f"yc_{row_id}",
                     "name": company_name,
                     "domain": url.replace("http://", "").replace("https://", "").split("/")[0],
                     "industry": row.get("vertical", "YC Startup"),
@@ -868,7 +883,7 @@ class RetrievalAgent(AgentBase):
         elif is_jobs_query:
             normalized_results = []
             for row in results:
-                company_name = row.get("company_name", "")
+                company_name = row.get("company_name") or ""
                 
                 # If company name is missing, empty, or unknown, let's extract it!
                 if not company_name or company_name.lower().strip() in ["unknown", "unknown company", "null", "none", ""]:
@@ -934,8 +949,11 @@ class RetrievalAgent(AgentBase):
                 if max_salary:
                     salary_str = f"{currency} {max_salary:,.0f}/{pay_period.lower()}"
                 
+                row_id = row.get('id')
+                if row_id is None:
+                    row_id = row.get('job_id') or row.get('company_name', 'unknown')
                 normalized = {
-                    "id": f"post_{row.get('id')}",
+                    "id": f"post_{row_id}",
                     "name": company_name,
                     "domain": f"{company_name.lower().replace(' ', '').replace('&', '')}.com",
                     "industry": "Job Posting",
@@ -993,12 +1011,13 @@ class EnrichmentAgent(AgentBase):
                     enriched["size_missing"] = True
                     
             # Compute a custom enrichment derived insight
-            signals = enriched.get("signals", {})
-            hiring_status = enriched.get("hiring_status", "")
-            growth_rate = enriched.get("growth_rate", "")
+            signals = enriched.get("signals") or {}
+            hiring_status = enriched.get("hiring_status") or ""
+            growth_rate = enriched.get("growth_rate") or ""
+            hiring_growth_signal = signals.get("hiring_growth") or ""
             
             # Generate a specific buying signal narrative
-            if "aggressive" in hiring_status.lower() and "high" in signals.get("hiring_growth", "").lower():
+            if "aggressive" in hiring_status.lower() and "high" in hiring_growth_signal.lower():
                 enriched["buying_intent_narrative"] = f"{enriched['name']} is experiencing rapid hiring growth ({growth_rate}) with key openings in engineering and leadership, showing strong intent to scale operations."
             elif "frozen" in hiring_status.lower():
                 enriched["buying_intent_narrative"] = f"{enriched['name']} is currently experiencing a hiring freeze, indicating slower near-term budget expansion."
@@ -1111,10 +1130,10 @@ class GTMStrategyAgent(AgentBase):
             growth_score = 0.75
             
             query_lower = query.lower()
-            industry = comp.get("industry", "").lower()
-            location = comp.get("location", "").lower()
-            hiring_status = comp.get("hiring_status", "").lower()
-            funding_stage = comp.get("funding_stage", "").lower()
+            industry = (comp.get("industry") or "").lower()
+            location = (comp.get("location") or "").lower()
+            hiring_status = (comp.get("hiring_status") or "").lower()
+            funding_stage = (comp.get("funding_stage") or "").lower()
             
             # Adjust Fit
             if "ai" in query_lower and "ai" in industry:
@@ -1131,9 +1150,15 @@ class GTMStrategyAgent(AgentBase):
                 intent_score -= 0.30
                 
             if "renewal" in query_lower or "churn" in query_lower:
-                contracts = comp.get("current_contracts", [])
-                if contracts and contracts[0]["satisfaction"].lower() == "low":
-                    intent_score += 0.25 # High intent to switch/churn
+                contracts = comp.get("current_contracts") or []
+                if contracts:
+                    first_contract = contracts[0]
+                    # current_contracts entries can be dicts or strings depending on the data source
+                    if isinstance(first_contract, dict):
+                        satisfaction = (first_contract.get("satisfaction") or "").lower()
+                        if satisfaction == "low":
+                            intent_score += 0.25  # High intent to switch/churn
+                    # If it's a plain string, no satisfaction key to check — skip boost
                     
             # Adjust Growth
             if "seed" in funding_stage:
